@@ -32,11 +32,12 @@ GetOptions(
 	'proteinFastaFile=s' => \(my $proteinFastaFile = "$dataPath/protein.fasta"),
 	'proteinCodingFile=s' => \(my $proteinCodingFile = "$dataPath/protein_coding.txt"),
 	'proteinFeatureFile=s' => \(my $proteinFeatureFile = "$dataPath/protein_feature.txt"),
+	'spliceJunctionFile=s' => \(my $spliceJunctionFile = "$dataPath/splice_junction.txt"),
 );
 if($help || scalar(@ARGV) == 0) {
 	die <<EOF;
 
-Usage:   perl fusion_read.pl [options] bwa.sam [...] > fusion_read.txt
+Usage:   perl CN-fusion.pl [options] fusion_read.txt [...] > CN-fusion.txt
 
 Options: -h       display this help message
          -t DIR   directory for temporary files [\$TMPDIR or /tmp]
@@ -160,9 +161,24 @@ my %proteinFeatureListHash = ();
 	}
 	close($reader);
 }
+my %transcriptPositionSpliceJunctionHash = ();
+{
+	open(my $reader, ($spliceJunctionFile =~ /\.gz$/ ? "gzip -dc $spliceJunctionFile |" : $spliceJunctionFile));
+	while(my $line = <$reader>) {
+		chomp($line);
+		my ($transcriptId, $position, $spliceJunction1, $spliceJunction2) = split(/\t/, $line, -1);
+		next if(defined($transcriptPositionSpliceJunctionHash{$transcriptId}->{$position}));
+		$transcriptPositionSpliceJunctionHash{$transcriptId}->{$position} = [$spliceJunction1, $spliceJunction2];
+	}
+	close($reader);
+}
 my @fusionColumnList = ('chromosome1', 'position1', 'strand1', 'chromosome2', 'position2', 'strand2', 'intermediateSequence', 'apart');
-my @fusionProteinCodingColumnList1 = (@fusionColumnList, 'type', 'gene1', 'proteinId1', 'codingRegions1', 'frame1', 'index1', 'gene2', 'proteinId2', 'codingRegions2', 'frame2', 'index2');
-my @fusionProteinCodingColumnList2 = (@fusionColumnList, 'count', 'type', 'codingStart1', 'codingEnd2');
+my @fusionProteinCodingColumnList1 = (@fusionColumnList, 'type', 'spliceJunction1', 'spliceJunction2');
+{
+	push(@fusionProteinCodingColumnList1, 'gene1', 'proteinId1', 'codingRegions1', 'frame1', 'index1');
+	push(@fusionProteinCodingColumnList1, 'gene2', 'proteinId2', 'codingRegions2', 'frame2', 'index2');
+}
+my @fusionProteinCodingColumnList2 = (@fusionColumnList, 'count', 'type', 'spliceJunction1', 'spliceJunction2', 'codingStart1', 'codingEnd2');
 if($regionReadFile ne '') {
 	push(@fusionProteinCodingColumnList2, 'gene1', 'proteinId1', 'matchLengthN1', 'matchLengthC1', 'matchCoverage1', 'includedProteinFeatures1', 'partiallyIncludedProteinFeatures1', 'excludedProteinFeatures1', 'ratio1', 'depth1', 'coverage1');
 	push(@fusionProteinCodingColumnList2, 'gene2', 'proteinId2', 'matchLengthN2', 'matchLengthC2', 'matchCoverage2', 'includedProteinFeatures2', 'partiallyIncludedProteinFeatures2', 'excludedProteinFeatures2', 'ratio2', 'depth2', 'coverage2');
@@ -171,14 +187,14 @@ if($regionReadFile ne '') {
 	push(@fusionProteinCodingColumnList2, 'gene2', 'proteinId2', 'matchLengthN2', 'matchLengthC2', 'matchCoverage2', 'includedProteinFeatures2', 'partiallyIncludedProteinFeatures2', 'excludedProteinFeatures2');
 }
 push(@fusionProteinCodingColumnList2, 'fusionProteinSequence');
-my (@fusionFileList) = @ARGV;
-if(@fusionFileList) {
+my (@fusionReadFileList) = @ARGV;
+if(@fusionReadFileList) {
 	my $pid = open2(my $reader, my $writer, 'LC_ALL=C sort');
 	forkPrintParentWriter($writer);
 	{
 		my $pid = open2(my $reader, my $writer, 'LC_ALL=C sort | uniq -c');
-		foreach my $fusionFile (@fusionFileList) {
-			open(my $reader, $sort eq '' ? ($fusionFile =~ /\.gz$/ ? "gzip -dc $fusionFile |" : $fusionFile) : ($fusionFile =~ /\.gz$/ ? "gzip -dc $fusionFile | LC_ALL=C sort -t '\t' -k10,10 |" : "LC_ALL=C sort -t '\t' -k10,10 $fusionFile |"));
+		foreach my $fusionReadFile (@fusionReadFileList) {
+			open(my $reader, $sort eq '' ? ($fusionReadFile =~ /\.gz$/ ? "gzip -dc $fusionReadFile |" : $fusionReadFile) : ($fusionReadFile =~ /\.gz$/ ? "gzip -dc $fusionReadFile | LC_ALL=C sort -t '\t' -k10,10 |" : "LC_ALL=C sort -t '\t' -k10,10 $fusionReadFile |"));
 			my ($readName, @tokenList) = ('');
 			while(my $line = <$reader>) {
 				chomp($line);
@@ -299,6 +315,35 @@ sub printFusionProtein1 {
 		my @codingTokenHashList = ();
 		my @noncodingTokenHashList = ();
 		foreach my $tokenHash (@tokenHashList) {
+			if((my $intermediateSequenceLength = length($tokenHash->{'intermediateSequence'})) > 0 && $tokenHash->{'apart'} eq '' && $tokenHash->{'strand1'} eq '+' && $tokenHash->{'strand2'} eq '+') {
+				if(defined(my $positionSpliceJunctionHash1 = $transcriptPositionSpliceJunctionHash{$tokenHash->{'chromosome1'}}) && defined(my $positionSpliceJunctionHash2 = $transcriptPositionSpliceJunctionHash{$tokenHash->{'chromosome2'}})) {
+					foreach my $index (0 .. $intermediateSequenceLength) {
+						my $position1 = $tokenHash->{'position1'} + $index;
+						my $position2 = $tokenHash->{'position2'} - ($intermediateSequenceLength - $index);
+						if(defined(my $spliceJunction1 = $positionSpliceJunctionHash1->{$position1}->[0]) && defined(my $spliceJunction2 = $positionSpliceJunctionHash2->{$position2 - 1}->[1])) {
+							$tokenHash->{'position1'} = $position1;
+							$tokenHash->{'position2'} = $position2;
+							$tokenHash->{'spliceJunction1'} = $spliceJunction1;
+							$tokenHash->{'spliceJunction2'} = $spliceJunction2;
+							$tokenHash->{'intermediateSequence'} = '';
+							last;
+						}
+					}
+				}
+			}
+			if((my $intermediateSequenceLength = length($tokenHash->{'intermediateSequence'})) > 0 && $tokenHash->{'apart'} eq '' && $tokenHash->{'strand1'} eq '+') {
+				if(defined(my $positionSpliceJunctionHash1 = $transcriptPositionSpliceJunctionHash{$tokenHash->{'chromosome1'}})) {
+					foreach my $index (0 .. $intermediateSequenceLength) {
+						my $position1 = $tokenHash->{'position1'} + $index;
+						if(defined(my $spliceJunction1 = $positionSpliceJunctionHash1->{$position1}->[0])) {
+							$tokenHash->{'position1'} = $position1;
+							$tokenHash->{'spliceJunction1'} = $spliceJunction1;
+							$tokenHash->{'intermediateSequence'} = substr($tokenHash->{'intermediateSequence'}, $index);
+							last;
+						}
+					}
+				}
+			}
 			if($tokenHash->{'strand1'} eq '+' && defined(my $proteinCoding1 = $transcriptProteinCodingHash{$tokenHash->{'chromosome1'}})) {
 				@$tokenHash{'gene1', 'proteinId1', 'codingRegions1', 'frame1'} = @$proteinCoding1;
 				my $codingPositionIndexHash1;

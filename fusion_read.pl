@@ -16,6 +16,7 @@ GetOptions(
 	's' => \(my $sort = ''),
 	'q=i' => \(my $minimumMappingQuality = 0),
 	'd=i' => \(my $maximumInnerDistance = 1000),
+	'c' => \(my $allowClippingEnd = ''),
 );
 if($help || scalar(@ARGV) == 0) {
 	die <<EOF;
@@ -28,6 +29,7 @@ Options: -h       display this help message
          -s       input is neither raw BWA output nor sorted by read name
          -q INT   minimum mapping quality [$minimumMappingQuality]
          -d INT   maximum inner-distance [$maximumInnerDistance]
+         -c       allow clipping end
 
 EOF
 }
@@ -157,20 +159,20 @@ sub printFusion {
 				my ($chromosome, $position, $cigar, $strand) = @$_;
 				my @positionList = getPositionList($position, $cigar);
 				my ($start, $end) = ($position, grep {$_ ne ''} reverse(@positionList));
-				if($cigar =~ /^([0-9]+)M/) {
-					my $length = $1;
+				if($cigar =~ /^([0-9]+)M/ || ($allowClippingEnd && $cigar =~ /^([0-9]+)[IS]([0-9]+)M/)) {
+					my ($length, $clipping) = defined($2) ? ($2, $1) : ($1, 0);
 					push(@{$numberChromosomeStrandPositionListHash{$number}}, [$chromosome, $strand, $start]) if($strand eq '-');
 					if($cigar =~ /([0-9]+)[IS]$/) {
-						push(@{$numberChromosomeStrandPositionLengthListHash1{$number}}, [$chromosome, $strand, $start, $length]) if($strand eq '+');
-						push(@{$numberChromosomeStrandPositionLengthListHash2{$number}}, [$chromosome, $strand, $start, $length]) if($strand eq '-');
+						push(@{$numberChromosomeStrandPositionLengthListHash1{$number}}, [$chromosome, $strand, $start, $length, $clipping]) if($strand eq '+');
+						push(@{$numberChromosomeStrandPositionLengthListHash2{$number}}, [$chromosome, $strand, $start, $length, $clipping]) if($strand eq '-');
 					}
 				}
-				if($cigar =~ /([0-9]+)M$/) {
-					my $length = $1;
+				if($cigar =~ /([0-9]+)M$/ || ($allowClippingEnd && $cigar =~ /([0-9]+)M([0-9]+)[IS]$/)) {
+					my ($length, $clipping) = defined($2) ? ($1, $2) : ($1, 0);
 					push(@{$numberChromosomeStrandPositionListHash{$number}}, [$chromosome, $strand, $end]) if($strand eq '+');
 					if($cigar =~ /^([0-9]+)[IS]/) {
-						push(@{$numberChromosomeStrandPositionLengthListHash1{$number}}, [$chromosome, $strand, $end, $length]) if($strand eq '-');
-						push(@{$numberChromosomeStrandPositionLengthListHash2{$number}}, [$chromosome, $strand, $end, $length]) if($strand eq '+');
+						push(@{$numberChromosomeStrandPositionLengthListHash1{$number}}, [$chromosome, $strand, $end, $length, $clipping]) if($strand eq '-');
+						push(@{$numberChromosomeStrandPositionLengthListHash2{$number}}, [$chromosome, $strand, $end, $length, $clipping]) if($strand eq '+');
 					}
 				}
 			}
@@ -180,19 +182,19 @@ sub printFusion {
 			my $length = length(my $sequence = $numberSequenceHash{$number});
 			foreach my $chromosomeStrandPositionLength1 (@{$numberChromosomeStrandPositionLengthListHash1{$number}}) {
 				foreach my $chromosomeStrandPositionLength2 (@{$numberChromosomeStrandPositionLengthListHash2{$number}}) {
-					my ($chromosome1, $strand1, $position1, $length1) = @$chromosomeStrandPositionLength1;
-					my ($chromosome2, $strand2, $position2, $length2) = @$chromosomeStrandPositionLength2;
+					my ($chromosome1, $strand1, $position1, $length1, $clipping1) = @$chromosomeStrandPositionLength1;
+					my ($chromosome2, $strand2, $position2, $length2, $clipping2) = @$chromosomeStrandPositionLength2;
 					my @mateChromosomeStrandPositionList = ();
 					if(($number == 1 || $number == 2) && defined(my $chromosomeStrandPositionList = $numberChromosomeStrandPositionListHash{3 - $number})) {
 						push(@mateChromosomeStrandPositionList, grep {$_->[0] eq $chromosome2 && $_->[1] ne $strand2 && (($strand2 eq '+' && $position2 - $length2 + 1 <= $_->[2] && ($_->[2] - 1) - $position2 <= $maximumInnerDistance) || ($strand2 eq '-' && $_->[2] <= $position2 + $length2 - 1 && ($position2 - 1) - $_->[2] <= $maximumInnerDistance))} @$chromosomeStrandPositionList);
 					}
+					next if($clipping1 + $clipping2 >= $length);
+					next if($length1 + ($clipping1 + $clipping2) >= $length);
+					next if($length2 + ($clipping1 + $clipping2) >= $length);
 					my $apart = '';
-					if($length1 + $length2 >= $length) {
-						($length1, $length2) = ($length - $length2, $length - $length1);
-					} else {
-						$apart = 1;
-					}
-					my $intermediateSequence = substr($sequence, $length1, -$length2);
+					$apart = 1 if($length1 + $length2 + $clipping1 + $clipping2 < $length);
+					($length1, $length2) = ($length - $length2 - $clipping1 - $clipping2, $length - $length1 - $clipping1 - $clipping2) if($length1 + $length2 + $clipping1 + $clipping2 > $length);
+					my $intermediateSequence = substr($sequence, $length1 + $clipping1, $length - $length1 - $length2 - $clipping1 - $clipping2);
 					$position1 = $position1 + $length1 - 1 if($strand1 eq '+');
 					$position2 = $position2 + $length2 - 1 if($strand2 eq '-');
 					$position1 = $position1 - $length1 + 1 if($strand1 eq '-');
@@ -208,10 +210,10 @@ sub printFusion {
 					}
 				}
 				if(($number == 1 || $number == 2) && scalar(@{$numberChromosomeStrandPositionLengthListHash2{$number}}) == 0) {
-					my ($chromosome1, $strand1, $position1, $length1) = @$chromosomeStrandPositionLength1;
-					my ($chromosome2, $strand2, $position2, $length2) = ('', '', '', '');
+					my ($chromosome1, $strand1, $position1, $length1, $clipping1) = @$chromosomeStrandPositionLength1;
+					my ($chromosome2, $strand2, $position2, $length2, $clipping2) = ('', '', '', '', '');
 					my $apart = '';
-					my $intermediateSequence = join('^', substr($sequence, $length1), getReverseComplementarySequence($numberSequenceHash{3 - $number}));
+					my $intermediateSequence = join('^', substr($sequence, $length1 + $clipping1, $length - $length1 - $clipping1), getReverseComplementarySequence($numberSequenceHash{3 - $number}));
 					$position1 = $position1 + $length1 - 1 if($strand1 eq '+');
 					$position1 = $position1 - $length1 + 1 if($strand1 eq '-');
 					{
@@ -223,14 +225,14 @@ sub printFusion {
 			}
 			if(($number == 1 || $number == 2) && scalar(@{$numberChromosomeStrandPositionLengthListHash1{$number}}) == 0) {
 				foreach my $chromosomeStrandPositionLength2 (@{$numberChromosomeStrandPositionLengthListHash2{$number}}) {
-					my ($chromosome1, $strand1, $position1, $length1) = ('', '', '', '');
-					my ($chromosome2, $strand2, $position2, $length2) = @$chromosomeStrandPositionLength2;
+					my ($chromosome1, $strand1, $position1, $length1, $clipping1) = ('', '', '', '', '');
+					my ($chromosome2, $strand2, $position2, $length2, $clipping2) = @$chromosomeStrandPositionLength2;
 					my @mateChromosomeStrandPositionList = ();
 					if(($number == 1 || $number == 2) && defined(my $chromosomeStrandPositionList = $numberChromosomeStrandPositionListHash{3 - $number})) {
 						push(@mateChromosomeStrandPositionList, grep {$_->[0] eq $chromosome2 && $_->[1] ne $strand2 && (($strand2 eq '+' && $position2 - $length2 + 1 <= $_->[2] && ($_->[2] - 1) - $position2 <= $maximumInnerDistance) || ($strand2 eq '-' && $_->[2] <= $position2 + $length2 - 1 && ($position2 - 1) - $_->[2] <= $maximumInnerDistance))} @$chromosomeStrandPositionList);
 					}
 					my $apart = '';
-					my $intermediateSequence = substr($sequence, 0, -$length2);
+					my $intermediateSequence = substr($sequence, 0, $length - $length2 - $clipping2);
 					$position2 = $position2 + $length2 - 1 if($strand2 eq '-');
 					$position2 = $position2 - $length2 + 1 if($strand2 eq '+');
 					{

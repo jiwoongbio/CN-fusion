@@ -4,6 +4,7 @@ use warnings;
 local $SIG{__WARN__} = sub { die $_[0] };
 
 use Cwd 'abs_path';
+use IPC::Open2;
 use Bio::DB::Fasta;
 use Bio::SeqIO;
 use Getopt::Long qw(:config no_ignore_case);
@@ -60,7 +61,6 @@ foreach my $genomeAssemblyFTP (@genomeAssemblyFTPList) {
 		close($reader);
 	}
 	close($writer);
-	system("diamond makedb --in $proteinFastaFile --db $proteinFastaFile.dmnd");
 }
 {
 	my $proteinCodingFile = "$dataPath/protein_coding.txt";
@@ -144,4 +144,85 @@ foreach my $genomeAssemblyFTP (@genomeAssemblyFTPList) {
 		close($reader);
 	}
 	close($writer);
+}
+{
+	my $pid = open2(my $reader, my $writer, "LC_ALL=C sort -t '\t' -k1,1 -k2,2 -k3,3 -k4,4n -k5,5n | uniq");
+	foreach my $genomeAssembly (@genomeAssemblyList) {
+		open(my $reader, "gzip -dc $dataPath/$genomeAssembly/$genomeAssembly\_genomic.gtf.gz |");
+		while(my $line = <$reader>) {
+			chomp($line);
+			next if($line =~ /^#/);
+			my %tokenHash = ();
+			@tokenHash{'chromosome', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attribute'} = split(/\t/, $line);
+			$tokenHash{$1} = $2 while($tokenHash{'attribute'} =~ m/([^"; ]+) +"([^"]+)";/g);
+			print $writer join("\t", @tokenHash{'transcript_id', 'chromosome', 'strand', 'start', 'end'}), "\n" if($tokenHash{'feature'} eq 'exon');
+		}
+		close($reader);
+	}
+	close($writer);
+	{
+		open(my $writer, "> $dataPath/splice_junction.txt");
+		my @tokenListList = ();
+		while(my $line = <$reader>) {
+			chomp($line);
+			my @tokenList = split(/\t/, $line, -1);
+			if(@tokenListList && grep {$tokenList[$_] ne $tokenListList[0]->[$_]} (0, 1, 2)) {
+				my ($transcriptId, $chromosome, $strand) = @{$tokenListList[0]}[0, 1, 2];
+				$transcriptId =~ s/_[0-9]+$//;
+				if($strand eq '+') {
+					my $position = 0;
+					foreach my $index (0 .. $#tokenListList) {
+						if($index > 0) {
+							my $spliceJunction1 = "$chromosome:$tokenListList[$index - 1]->[4]";
+							my $spliceJunction2 = "$chromosome:$tokenListList[$index]->[3]";
+							print $writer join("\t", $transcriptId, $position, $spliceJunction1, $spliceJunction2), "\n";
+						}
+						$position += $tokenListList[$index]->[4] - $tokenListList[$index]->[3] + 1;
+					}
+				}
+				if($strand eq '-') {
+					my $position = 0;
+					foreach my $index (reverse(0 .. $#tokenListList)) {
+						if($index < $#tokenListList) {
+							my $spliceJunction1 = "$chromosome:$tokenListList[$index + 1]->[3]";
+							my $spliceJunction2 = "$chromosome:$tokenListList[$index]->[4]";
+							print $writer join("\t", $transcriptId, $position, $spliceJunction1, $spliceJunction2), "\n";
+						}
+						$position += $tokenListList[$index]->[4] - $tokenListList[$index]->[3] + 1;
+					}
+				}
+				@tokenListList = ();
+			}
+			push(@tokenListList, \@tokenList);
+		}
+		if(@tokenListList) {
+			my ($transcriptId, $chromosome, $strand) = @{$tokenListList[0]}[0, 1, 2];
+			$transcriptId =~ s/_[0-9]+$//;
+			if($strand eq '+') {
+				my $position = 0;
+				foreach my $index (0 .. $#tokenListList) {
+					if($index > 0) {
+						my $spliceJunction1 = "$chromosome:$tokenListList[$index - 1]->[4]";
+						my $spliceJunction2 = "$chromosome:$tokenListList[$index]->[3]";
+						print $writer join("\t", $transcriptId, $position, $spliceJunction1, $spliceJunction2), "\n";
+					}
+					$position += $tokenListList[$index]->[4] - $tokenListList[$index]->[3] + 1;
+				}
+			}
+			if($strand eq '-') {
+				my $position = 0;
+				foreach my $index (reverse(0 .. $#tokenListList)) {
+					if($index < $#tokenListList) {
+						my $spliceJunction1 = "$chromosome:$tokenListList[$index + 1]->[3]";
+						my $spliceJunction2 = "$chromosome:$tokenListList[$index]->[4]";
+						print $writer join("\t", $transcriptId, $position, $spliceJunction1, $spliceJunction2), "\n";
+					}
+					$position += $tokenListList[$index]->[4] - $tokenListList[$index]->[3] + 1;
+				}
+			}
+		}
+		close($writer);
+	}
+	close($reader);
+	waitpid($pid, 0);
 }
