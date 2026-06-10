@@ -38,13 +38,8 @@ foreach my $genomeAssemblyFTP (@genomeAssemblyFTPList) {
 {
 	my $fastaFile = "$dataPath/rna_genomic.fasta";
 	open(my $writer, "> $fastaFile");
-	foreach my $genomeAssembly (@genomeAssemblyList) {
-		open(my $reader, "gzip -dc $dataPath/$genomeAssembly/$genomeAssembly\_rna.fna.gz |");
-		print $writer $_ while(<$reader>);
-		close($reader);
-	}
-	foreach my $genomeAssembly (@genomeAssemblyList) {
-		open(my $reader, "gzip -dc $dataPath/$genomeAssembly/$genomeAssembly\_genomic.fna.gz |");
+	foreach my $file (grep {-e $_} map {("$dataPath/$_/$_\_rna.fna.gz", "$dataPath/$_/$_\_genomic.fna.gz")} @genomeAssemblyList) {
+		open(my $reader, "gzip -dc $file |");
 		print $writer $_ while(<$reader>);
 		close($reader);
 	}
@@ -55,8 +50,8 @@ foreach my $genomeAssemblyFTP (@genomeAssemblyFTPList) {
 {
 	my $proteinFastaFile = "$dataPath/protein.fasta";
 	open(my $writer, "> $proteinFastaFile");
-	foreach my $genomeAssembly (@genomeAssemblyList) {
-		open(my $reader, "gzip -dc $dataPath/$genomeAssembly/$genomeAssembly\_protein.faa.gz |");
+	foreach my $file (grep {-e $_} map {("$dataPath/$_/$_\_protein.faa.gz")} @genomeAssemblyList) {
+		open(my $reader, "gzip -dc $file |");
 		print $writer $_ while(<$reader>);
 		close($reader);
 	}
@@ -67,8 +62,8 @@ foreach my $genomeAssemblyFTP (@genomeAssemblyFTPList) {
 	my $terminationCodons = 'TAG,TAA,TGA';
 	my %terminationCodonHash = map {$_ => 1} split(/,/, $terminationCodons);
 	open(my $writer, "| sort -u > $proteinCodingFile");
-	foreach my $genomeAssembly (@genomeAssemblyList) {
-		open(my $reader, "gzip -dc $dataPath/$genomeAssembly/$genomeAssembly\_rna.gbff.gz |");
+	foreach my $file (grep {-e $_} map {("$dataPath/$_/$_\_rna.gbff.gz")} @genomeAssemblyList) {
+		open(my $reader, "gzip -dc $file |");
 		my $string = '';
 		while(my $line = <$reader>) {
 			$string .= $line;
@@ -103,9 +98,9 @@ foreach my $genomeAssemblyFTP (@genomeAssemblyFTPList) {
 {
 	my $proteinFeatureFile = "$dataPath/protein_feature.txt";
 	open(my $writer, "| sort -u > $proteinFeatureFile");
-	foreach my $genomeAssembly (@genomeAssemblyList) {
+	foreach my $file (grep {-e $_} map {("$dataPath/$_/$_\_protein.gpff.gz")} @genomeAssemblyList) {
+		open(my $reader, "gzip -dc $file |");
 		my $string = '';
-		open(my $reader, "gzip -dc $dataPath/$genomeAssembly/$genomeAssembly\_protein.gpff.gz |");
 		while(my $line = <$reader>) {
 			$string .= $line;
 			if($line eq "//\n") {
@@ -147,8 +142,8 @@ foreach my $genomeAssemblyFTP (@genomeAssemblyFTPList) {
 }
 {
 	my $pid = open2(my $reader, my $writer, "LC_ALL=C sort -t '\t' -k1,1 -k2,2 -k3,3 -k4,4n -k5,5n | uniq");
-	foreach my $genomeAssembly (@genomeAssemblyList) {
-		open(my $reader, "gzip -dc $dataPath/$genomeAssembly/$genomeAssembly\_genomic.gtf.gz |");
+	foreach my $file (grep {-e $_} map {("$dataPath/$_/$_\_genomic.gtf.gz")} @genomeAssemblyList) {
+		open(my $reader, "gzip -dc $file |");
 		while(my $line = <$reader>) {
 			chomp($line);
 			next if($line =~ /^#/);

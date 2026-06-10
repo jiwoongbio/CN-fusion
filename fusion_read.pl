@@ -29,7 +29,7 @@ Options: -h       display this help message
          -s       input is neither raw BWA output nor sorted by read name
          -q INT   minimum mapping quality [$minimumMappingQuality]
          -d INT   maximum inner-distance [$maximumInnerDistance]
-         -c       allow clipping end
+         -c       allow alignments with clipping at non-fusion outer ends as anchors
 
 EOF
 }
@@ -46,7 +46,7 @@ EOF
 		if(my $pid = fork()) {
 			$pidHash{$pid} = 1;
 		} else {
-			open($writer, "> $temporaryDirectory/fork.$hostname.$parentPid.$$");
+			open($writer, "> $temporaryDirectory/fork.$hostname.$parentPid.$$") or die "Can't open '$temporaryDirectory/fork.$hostname.$parentPid.$$': $!";
 			$subroutine->(@arguments);
 			close($writer);
 			exit(0);
@@ -58,7 +58,8 @@ EOF
 		while(scalar(keys %pidHash) >= $number) {
 			my $pid = wait();
 			if($pidHash{$pid}) {
-				open(my $reader, "$temporaryDirectory/fork.$hostname.$parentPid.$pid");
+				die "Child process $pid failed with status $?" if $? != 0;
+				open(my $reader, "$temporaryDirectory/fork.$hostname.$parentPid.$pid") or die "Can't open '$temporaryDirectory/fork.$hostname.$parentPid.$pid': $!";
 				if(defined($parentWriter)) {
 					print $parentWriter $_ while(<$reader>);
 				} else {
@@ -191,20 +192,20 @@ sub printFusion {
 					next if($clipping1 + $clipping2 >= $length);
 					next if($length1 + ($clipping1 + $clipping2) >= $length);
 					next if($length2 + ($clipping1 + $clipping2) >= $length);
-					my $apart = '';
-					$apart = 1 if($length1 + $length2 + $clipping1 + $clipping2 < $length);
+					my $isApart = '';
+					$isApart = 1 if($length1 + $length2 + $clipping1 + $clipping2 < $length);
 					($length1, $length2) = ($length - $length2 - $clipping1 - $clipping2, $length - $length1 - $clipping1 - $clipping2) if($length1 + $length2 + $clipping1 + $clipping2 > $length);
-					my $intermediateSequence = substr($sequence, $length1 + $clipping1, $length - $length1 - $length2 - $clipping1 - $clipping2);
+					my $insertedSequence = substr($sequence, $length1 + $clipping1, $length - $length1 - $length2 - $clipping1 - $clipping2);
 					$position1 = $position1 + $length1 - 1 if($strand1 eq '+');
 					$position2 = $position2 + $length2 - 1 if($strand2 eq '-');
 					$position1 = $position1 - $length1 + 1 if($strand1 eq '-');
 					$position2 = $position2 - $length2 + 1 if($strand2 eq '+');
 					if(($chromosome1 lt $chromosome2) || ($chromosome1 eq $chromosome2 && $position1 <= $position2)) {
-						my $fusion = join("\t", $chromosome1, $position1, $strand1, $chromosome2, $position2, $strand2, $intermediateSequence, $apart, ($number == 2 ? '-' : '+'));
+						my $fusion = join("\t", $chromosome1, $position1, $strand1, $chromosome2, $position2, $strand2, $insertedSequence, $isApart, ($number == 2 ? '-' : '+'));
 						$fusionNumberHash{$fusion}->{$number} = 1;
 						$fusionNumberHash{$fusion}->{3 - $number} = 1 if(@mateChromosomeStrandPositionList);
 					} else {
-						my $fusion = join("\t", $chromosome2, $position2, ($strand2 eq '+' ? '-' : $strand2 eq '-' ? '+' : ''), $chromosome1, $position1, ($strand1 eq '+' ? '-' : $strand1 eq '-' ? '+' : ''), getReverseComplementarySequence($intermediateSequence), $apart, ($number == 2 ? '+' : '-'));
+						my $fusion = join("\t", $chromosome2, $position2, ($strand2 eq '+' ? '-' : $strand2 eq '-' ? '+' : ''), $chromosome1, $position1, ($strand1 eq '+' ? '-' : $strand1 eq '-' ? '+' : ''), getReverseComplementarySequence($insertedSequence), $isApart, ($number == 2 ? '+' : '-'));
 						$fusionNumberHash{$fusion}->{$number} = 1;
 						$fusionNumberHash{$fusion}->{3 - $number} = 1 if(@mateChromosomeStrandPositionList);
 					}
@@ -212,12 +213,13 @@ sub printFusion {
 				if(($number == 1 || $number == 2) && scalar(@{$numberChromosomeStrandPositionLengthListHash2{$number}}) == 0) {
 					my ($chromosome1, $strand1, $position1, $length1, $clipping1) = @$chromosomeStrandPositionLength1;
 					my ($chromosome2, $strand2, $position2, $length2, $clipping2) = ('', '', '', '', '');
-					my $apart = '';
-					my $intermediateSequence = join('^', substr($sequence, $length1 + $clipping1, $length - $length1 - $clipping1), getReverseComplementarySequence($numberSequenceHash{3 - $number}));
+					my $isApart = '';
+					my $insertedSequence = substr($sequence, $length1 + $clipping1, $length - $length1 - $clipping1);
+					$insertedSequence = join('^', $insertedSequence, getReverseComplementarySequence($numberSequenceHash{3 - $number})) if(defined($numberSequenceHash{3 - $number}));
 					$position1 = $position1 + $length1 - 1 if($strand1 eq '+');
 					$position1 = $position1 - $length1 + 1 if($strand1 eq '-');
 					{
-						my $fusion = join("\t", $chromosome1, $position1, $strand1, $chromosome2, $position2, $strand2, $intermediateSequence, $apart, ($number == 2 ? '-' : '+'));
+						my $fusion = join("\t", $chromosome1, $position1, $strand1, $chromosome2, $position2, $strand2, $insertedSequence, $isApart, ($number == 2 ? '-' : '+'));
 						$fusionNumberHash{$fusion}->{$number} = 1;
 						$fusionNumberHash{$fusion}->{3 - $number} = 1 if($numberUnmappedHash{3 - $number});
 					}
@@ -231,12 +233,12 @@ sub printFusion {
 					if(($number == 1 || $number == 2) && defined(my $chromosomeStrandPositionList = $numberChromosomeStrandPositionListHash{3 - $number})) {
 						push(@mateChromosomeStrandPositionList, grep {$_->[0] eq $chromosome2 && $_->[1] ne $strand2 && (($strand2 eq '+' && $position2 - $length2 + 1 <= $_->[2] && ($_->[2] - 1) - $position2 <= $maximumInnerDistance) || ($strand2 eq '-' && $_->[2] <= $position2 + $length2 - 1 && ($position2 - 1) - $_->[2] <= $maximumInnerDistance))} @$chromosomeStrandPositionList);
 					}
-					my $apart = '';
-					my $intermediateSequence = substr($sequence, 0, $length - $length2 - $clipping2);
+					my $isApart = '';
+					my $insertedSequence = substr($sequence, 0, $length - $length2 - $clipping2);
 					$position2 = $position2 + $length2 - 1 if($strand2 eq '-');
 					$position2 = $position2 - $length2 + 1 if($strand2 eq '+');
 					{
-						my $fusion = join("\t", $chromosome2, $position2, ($strand2 eq '+' ? '-' : $strand2 eq '-' ? '+' : ''), $chromosome1, $position1, ($strand1 eq '+' ? '-' : $strand1 eq '-' ? '+' : ''), getReverseComplementarySequence($intermediateSequence), $apart, ($number == 2 ? '+' : '-'));
+						my $fusion = join("\t", $chromosome2, $position2, ($strand2 eq '+' ? '-' : $strand2 eq '-' ? '+' : ''), $chromosome1, $position1, ($strand1 eq '+' ? '-' : $strand1 eq '-' ? '+' : ''), getReverseComplementarySequence($insertedSequence), $isApart, ($number == 2 ? '+' : '-'));
 						$fusionNumberHash{$fusion}->{$number} = 1;
 						$fusionNumberHash{$fusion}->{3 - $number} = 1 if(@mateChromosomeStrandPositionList);
 					}
@@ -280,6 +282,6 @@ sub getPositionList {
 
 sub getReverseComplementarySequence {
 	my ($sequence) = @_;
-	($sequence = reverse($sequence)) =~ tr/ACGT/TGCA/;
+	($sequence = reverse($sequence)) =~ tr/ACGTacgt/TGCAtgca/;
 	return $sequence;
 }
